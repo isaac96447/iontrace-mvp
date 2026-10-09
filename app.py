@@ -53,11 +53,23 @@ if uploaded_file is None:
     col2.metric("Supported Hardware", "4 Major Vendors", "BioLogic, Neware, Arbin, Maccor")
     col3.metric("Parsing Latency", "< 2.0s", "1,350x faster than Excel")
     
-    # Placeholder Graphic / Graphic Demo
+    # Clean Container / Output Architecture
     st.markdown("---")
-    st.markdown("### Expected Output Architecture")
-    st.image("https://raw.githubusercontent.com/streamlit/educational-resources/main/streamlit-logo-primary-col.png", width=100)
-    st.write("👈 *Drag and drop your Chinese customer's raw `.csv` or test file in the sidebar to run live parser.*")
+    st.markdown("### Live Pipeline Capability")
+    
+    with st.container():
+        st.info("👈 **Ready for Ingestion:** Drag & drop your raw battery dataset (.csv, .xlsx) in the left sidebar to render live curves.")
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("**1. Universal Binary Ingestion**")
+            st.caption("Parses `.mpr`, `.nda`, `.res`, and `.csv` files natively in seconds.")
+        with c2:
+            st.markdown("**2. Automated Normalization**")
+            st.caption("Aligns time offsets, step indices, and capacity scales automatically.")
+        with c3:
+            st.markdown("**3. Interactive Analytics**")
+            st.caption("Generates Voltage vs. Capacity profiles & $dQ/dV$ diagnostic curves.")
 
 else:
     # --- FILE PARSING ENGINE ---
