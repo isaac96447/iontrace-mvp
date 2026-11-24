@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import time
 import os
+import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -21,6 +22,48 @@ st.markdown("""
     h1, h2, h3 { color: #ECEFF4; }
     </style>
 """, unsafe_allow_html=True)
+
+@st.cache_data(show_spinner=False)
+def parse_biologic_txt(file_bytes: bytes) -> pd.DataFrame:
+    text = file_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+
+    # Locate the real tab-separated column header row (skips EC-Lab ASCII preamble)
+    header_idx = 0
+    for i, line in enumerate(lines[:100]):
+        if "time/s" in line and ("Ecell/V" in line or "<I>/mA" in line):
+            header_idx = i
+            break
+
+    df = pd.read_csv(
+        io.StringIO("\n".join(lines[header_idx:])),
+        sep="\t",
+        engine="c",
+        low_memory=False,
+    )
+    df.columns = [c.strip() for c in df.columns]
+
+    # Map Bio-Logic headers so voltage_col / capacity_col / cycle_col auto-detect cleanly
+    col_map = {
+        "time/s": "Time (s)",
+        "Ecell/V": "Voltage (V)",
+        "<I>/mA": "Current (mA)",
+        "Q discharge/mA.h": "Discharge_Capacity (mAh)",
+        "Q charge/mA.h": "Charge_Capacity (mAh)",
+        "cycle number": "Cycle_Index",
+        "ox/red": "ox_red",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    for col in ["Time (s)", "Voltage (V)", "Current (mA)", "Discharge_Capacity (mAh)", "Charge_Capacity (mAh)", "Cycle_Index"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+def prepare_plot_df(df: pd.DataFrame, max_points: int = 5000) -> pd.DataFrame:
+    if len(df) <= max_points:
+        return df
+    stride = max(1, len(df) // max_points)
+    return df.iloc[::stride].copy()
 
 # --- SIDEBAR: LOGO & INGESTION MODE ---
 st.sidebar.title("🔋 IONTRACE")
@@ -57,11 +100,8 @@ st.caption("Automated Binary Parsing & Step Normalization Engine")
 
 # --- CORE INGESTION & VISUALIZATION LOGIC ---
 if input_mode == "⚡ Instant Demo (Pre-loaded CALCE Run)":
-    # --- SYNTHETIC/MOCK DATA GENERATOR FOR INSTANT DEMO ---
-    # Renders instantly for reviewers without requiring heavy C-binary parser dependencies
     st.success("⚡ Ingesting pre-loaded CALCE CS2_33 Battery Test Run (`.mpr` format)...")
     
-    # Generate realistic CALCE charge/discharge cycle curve data
     capacity_vals = [i * 10 for i in range(121)]
     voltage_vals = [3.0 + (i / 120)**0.5 * 1.2 for i in range(121)]
     df = pd.DataFrame({
@@ -72,7 +112,6 @@ if input_mode == "⚡ Instant Demo (Pre-loaded CALCE Run)":
     
     file_display_name = "calce_test_run.mpr (CALCE CS2_33)"
     
-    # Render Metrics Row
     st.markdown("---")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Max Voltage (V)", "4.200 V")
@@ -80,7 +119,6 @@ if input_mode == "⚡ Instant Demo (Pre-loaded CALCE Run)":
     m3.metric("Data Points Ingested", f"{len(df):,}")
     m4.metric("Physics Guardrail Status", "Verified (Butler-Volmer)")
 
-    # Interactive Plot
     st.markdown("### Automated Electrochemical Diagnostics")
     fig_v_cap = px.line(
         df, 
@@ -103,7 +141,6 @@ if input_mode == "⚡ Instant Demo (Pre-loaded CALCE Run)":
         )
 
 elif uploaded_file is None:
-    # --- EMPTY STATE WHEN DRAG & DROP IS SELECTED BUT NO FILE IS UPLOADED ---
     st.info("👋 **Welcome to the Iontrace MVP Demo.** Drag & drop a raw cycler dataset on the left sidebar to parse and visualize time-series battery curves live.")
     
     st.subheader("System Status")
@@ -130,20 +167,23 @@ elif uploaded_file is None:
 else:
     # --- CUSTOM FILE PARSING ENGINE ---
     with st.spinner("⚡ Ingesting raw hardware streams... Normalizing step indices and timestamps..."):
-        time.sleep(0.5)
+        t0 = time.perf_counter()
         
         try:
-            if uploaded_file.name.endswith(".csv") or uploaded_file.name.endswith(".txt"):
+            fname = uploaded_file.name.lower()
+            if fname.endswith(".txt"):
+                df = parse_biologic_txt(uploaded_file.getvalue())
+            elif fname.endswith(".csv"):
                 df = pd.read_csv(uploaded_file)
             else:
                 df = pd.read_excel(uploaded_file)
-                
-            st.success(f"Successfully ingested **{uploaded_file.name}** ({len(df):,} rows processed in 0.4s)")
+
+            elapsed = time.perf_counter() - t0
+            st.success(f"Successfully ingested **{uploaded_file.name}** ({len(df):,} rows processed in {elapsed:.2f}s)")
             
             # Flexible Column Auto-Detection
-            cols = [c.lower() for c in df.columns]
-            voltage_col = next((c for c in df.columns if "volt" in c.lower() or "ewe" in c.lower() or c.lower() == "v"), df.columns[0])
-            capacity_col = next((c for c in df.columns if "cap" in c.lower() or "ah" in c.lower() or "mah" in c.lower()), df.columns[1] if len(df.columns) > 1 else df.columns[0])
+            voltage_col = next((c for c in df.columns if "volt" in c.lower() or "ewe" in c.lower() or "ecell" in c.lower() or c.lower() == "v"), df.columns[0])
+            capacity_col = next((c for c in df.columns if "discharge_cap" in c.lower() or "cap" in c.lower() or "ah" in c.lower() or "mah" in c.lower()), df.columns[1] if len(df.columns) > 1 else df.columns[0])
             cycle_col = next((c for c in df.columns if "cycl" in c.lower() or "step" in c.lower()), None)
 
             # Top Metrics
@@ -159,10 +199,11 @@ else:
             m3.metric("Data Points Ingested", f"{total_rows:,}")
             m4.metric("Data Schema Status", "Standardized (.lattice)")
 
-            # Interactive Plots
+            # Interactive Plots (Downsampled to max 5,000 points to prevent browser WebSocket freeze)
             st.markdown("### Automated Electrochemical Diagnostics")
+            plot_df = prepare_plot_df(df, max_points=5000)
             fig_v_cap = px.line(
-                df, 
+                plot_df, 
                 x=capacity_col, 
                 y=voltage_col, 
                 color=cycle_col if cycle_col else None,
